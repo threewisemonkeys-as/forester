@@ -37,7 +37,9 @@ let get_expanded_title ~env frontmatter forest =
 let render_xml_qname qname =
   match qname.prefix with
   | "" -> qname.uname
-  | _ -> Format.sprintf "%s:%s" qname.prefix qname.uname
+  | _ ->
+    if qname.xmlns = Some "http://www.w3.org/1999/xhtml" then qname.uname
+    else Format.sprintf "%s:%s" qname.prefix qname.uname
 
 let render_xml_attr ~env T.{key; value} =
   let str_value =

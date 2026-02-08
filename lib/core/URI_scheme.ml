@@ -6,6 +6,8 @@
 
 open Forester_prelude
 
+let file_uri ~base ~ext name = URI.resolve ~base @@ URI.make ~path:[name ^ ext] ()
+
 let named_uri ~base name =
   URI.resolve ~base
   @@

@@ -370,7 +370,7 @@ and eval_node ~env node : Value.t =
   | Syndicate_query_as_json_blob ->
     let name = pop_text_arg ~env ~loc in
     let blob_uri =
-      URI_scheme.named_uri ~base:env.config.url @@ name ^ ".json"
+      URI_scheme.file_uri ~base:env.config.url ~ext: ".json" name
     in
     let query_arg = eval_pop_arg ~env ~loc in
     begin match query_arg.value with

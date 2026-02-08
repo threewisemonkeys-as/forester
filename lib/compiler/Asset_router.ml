@@ -26,7 +26,7 @@ let install ~(config : Config.t) ~source_path ~content =
     let cid = Cid.v ~version:`Cidv1 ~codec:`Raw ~base:`Base32 ~hash in
     let cid_str = Cid.to_string cid in
     let ext = Filename.extension normalized in
-    let uri = URI_scheme.named_uri ~base:config.url (cid_str ^ ext) in
+    let uri = URI_scheme.file_uri ~base:config.url ~ext cid_str in
     Hashtbl.add router normalized uri;
     uri
 

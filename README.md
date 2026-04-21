@@ -41,4 +41,4 @@ reformatted before being applied.
 
 ### Example Use
 
-Please see my [Forest](https://github.com/jonsterling/forest) for an example of using forester, or create your own forest using `forester init`.
+Please see my [Forest](https://git.sr.ht/~jonsterling/public-forest) for an example of using forester, or create your own forest using `forester init`.

@@ -22,7 +22,7 @@ val render_xml_qname : T.xml_qname -> string
 
 val render_content : State.t -> T.content -> Pure_html.node list
 val render_transclusion : State.t -> T.content -> Pure_html.node list
-val render_frontmatter : State.t -> T.content T.frontmatter -> Pure_html.node
+val render_frontmatter : ?label: string -> State.t -> T.content T.frontmatter -> Pure_html.node
 
 val render_query_result : State.t -> Vertex_set.t -> Pure_html.node option
 
@@ -30,4 +30,10 @@ val render_query_result : State.t -> Vertex_set.t -> Pure_html.node option
     trees, or [None] if nothing matches. *)
 val render_query : State.t -> (string, T.content T.vertex) Datalog_expr.query -> Pure_html.node option
 
-val render_toc : T.content T.section -> Pure_html.node
+(** The table of contents of a tree, if it should have one. *)
+val render_toc : State.t -> T.content T.article -> Pure_html.node option
+
+(** The page header, with a link home on every tree but the home tree. *)
+val render_header : State.t -> T.content T.article -> Pure_html.node
+
+val render_title : State.t -> T.content T.article -> string

@@ -36,52 +36,6 @@ let route (forest : State.t) uri : URI.t =
     let path = "" :: local_path_components uri in
     URI.make ~path ()
 
-let title_flags_to_http_header (flags : T.title_flags) =
-  match flags with
-  | {empty_when_untitled} ->
-    `Assoc ([("Empty-When-Untitled", `String (Bool.to_string empty_when_untitled))])
-
-(* I am encoding these headers to JSON because that is what HTMX
-   requires, but it would be more beautiful if we could directly use the
-   header type*)
-let section_flags_to_http_header (flags : T.section_flags) =
-  match flags with
-  | {hidden_when_empty;
-    included_in_toc;
-    header_shown;
-    metadata_shown;
-    numbered;
-    expanded
-  } ->
-    let to_header l t =
-      match t with
-      | Some v -> Some (l, `String (Bool.to_string v))
-      | None -> None
-    in
-    let headers = [
-      to_header "Hidden-When-Empty" hidden_when_empty;
-      to_header "Included-In-Toc" included_in_toc;
-      to_header "Header-Shown" header_shown;
-      to_header "Metadata-Shown" metadata_shown;
-      to_header "Numbered" numbered;
-      to_header "Expanded" expanded;
-    ]
-    in
-    `Assoc (List.filter_map Fun.id headers)
-
-let content_target_to_http_header (target : T.content_target) =
-  match target with
-  | T.Full flags ->
-    let `Assoc flags = section_flags_to_http_header flags in
-    `Assoc (("Full", `String "true") :: flags)
-  | T.Mainmatter ->
-    `Assoc ["Mainmatter", `String "true"]
-  | T.Title flags ->
-    let `Assoc flags = title_flags_to_http_header flags in
-    `Assoc (("Title", `String "true") :: flags)
-  | T.Taxon ->
-    `Assoc ["Taxon", `String "true"]
-
 let xhtml_ns = "http://www.w3.org/1999/xhtml"
 
 (* We are emitting HTML rather than XML, so elements in the XHTML namespace
@@ -133,78 +87,126 @@ let render_date (date : Human_datetime.t) =
     | None -> null []
     | Some i -> txt "%i" i
   in
+  (* Dates have no page of their own, so unlike tree.xsl there is no link. *)
   li
     [class_ "meta-item"]
     [
-      a
-        [class_ "link local"]
-        [
-          Option.value ~default: (null []) month;
-          if Option.is_some month then txt " " else null [];
-          day;
-          if Option.is_some month then txt ", " else null [];
-          year
-        ]
+      Option.value ~default: (null []) month;
+      if Option.is_some month then txt " " else null [];
+      day;
+      if Option.is_some month then txt ", " else null [];
+      year
     ]
 
-(*This type is just temporary until I figure out the logic *)
-type toc_config = {
-  suffix: string;
-  taxon: string;
-  number: string;
-  fallback_number: string;
-
-  (* In XSL, hese require querying the ancestors. We can't do this here, so we
-     explicitly pass  these parameters down*)
+(* Rendering context. Transclusions are rendered inline (as in the static
+   build) so that section numbers and the table of contents can be computed
+   the same way the XSLT theme does. Rendering never yields to the Eio
+   scheduler, so a plain reference is enough to thread the context. *)
+type ctx = {
+  ancestors: URI.t list; (* trees being rendered, to detect transclusion loops *)
+  number: int list; (* number of the closest numbered ancestor section *)
+  unnumbered: bool; (* some ancestor has [numbered = false] or [toc = false] *)
   in_backmatter: bool;
-  is_root: bool;
-  implicitly_unnumbered: bool;
 }
 
-let default_toc_config
-  ?(suffix = "")
-  ?(taxon = "")
-  ?(number = "")
-  ?(fallback_number = "")
-  ?(in_backmatter = false)
-  ()
-= {
-  suffix;
-  taxon;
-  number;
-  fallback_number;
-  in_backmatter;
-  is_root = false;
-  implicitly_unnumbered = false;
-}
+let root_ctx = {ancestors = []; number = []; unnumbered = false; in_backmatter = false}
+
+let current_ctx = ref root_ctx
+
+let with_ctx ctx kont =
+  let old = !current_ctx in
+  current_ctx := ctx;
+  Fun.protect ~finally: (fun () -> current_ctx := old) kont
+
+let is_ancestor uri = List.exists (URI.equal uri) !current_ctx.ancestors
+
+let nbsp = "\u{00A0}"
+
+let route_string uri = "/trees" ^ URI.path_string uri
+
+(* Replace a full transclusion by the section it denotes, unless it would loop. *)
+let inline_full_transclusion (forest : State.t) (node : T.content T.content_node) =
+  match node with
+  | T.Transclude ({target = Full _; href} as transclusion) when not (is_ancestor href) ->
+    begin
+      match State.get_content_of_transclusion transclusion forest with
+      | Some (T.Content [T.Section section]) -> T.Section section
+      | _ -> node
+    end
+  | _ -> node
+
+(* The sections that appear directly in some content once transclusions are
+   inlined, i.e. the [f:tree] children of an [f:mainmatter] in the XML. *)
+let rec child_sections ?(visited = []) (forest : State.t) (T.Content nodes) =
+  let@ node = List.concat_map @~ nodes in
+  match inline_full_transclusion forest node with
+  | T.Section section -> [section]
+  | T.Transclude ({target = Mainmatter; href} as transclusion) when not (List.exists (URI.equal href) visited) ->
+    begin
+      match State.get_content_of_transclusion transclusion forest with
+      | Some content -> child_sections ~visited: (href :: visited) forest content
+      | None -> []
+    end
+  | _ -> []
+
+let excluded_from_numbering (section : T.content T.section) =
+  section.flags.numbered = Some false || section.flags.included_in_toc = Some false
+
+(* Number a list of sibling sections following the rules of the
+   [tree-taxon-with-number] template in tree.xsl. Returns, for each section,
+   the number to display (if any) and the context for rendering its body. *)
+let number_siblings (forest : State.t) (sections : T.content T.section list) =
+  let ctx = !current_ctx in
+  let siblings = List.length sections in
+  let counter = ref 0 in
+  let@ section = List.map @~ sections in
+  let excluded = excluded_from_numbering section in
+  let number =
+    if excluded then ctx.number
+    else (incr counter; ctx.number @ [!counter])
+  in
+  let unnumbered = ctx.unnumbered || excluded in
+  let implicitly_unnumbered =
+    siblings = 1 && not (List.length (child_sections forest section.mainmatter) > 1)
+  in
+  let label =
+    match section.frontmatter.number with
+    | Some number -> Some number
+    | None ->
+      if not ctx.in_backmatter && not unnumbered && not implicitly_unnumbered then
+        Some (String.concat "." (List.map string_of_int number))
+      else None
+  in
+  (* The section's body is a mainmatter transclusion, which records its URI. *)
+  section, label, {ctx with number; unnumbered}
+
+let section_id (section : T.content T.section) label =
+  match section.frontmatter.uri, label with
+  | Some uri, _ -> Some ("tree-" ^ String.concat "-" (List.filter (( <> ) "") (URI.path_components uri)))
+  | None, Some label -> Some ("section-" ^ label)
+  | None, None -> None
 
 let rec render_article (forest : State.t) (article : T.content T.article) : node =
-  (* FIXME: What should reserved be here? *)
   let@ () = Xmlns.run ~reserved: [] in
+  let@ () = with_ctx {root_ctx with ancestors = Option.to_list article.frontmatter.uri} in
   HTML.article
     [id "tree-container";]
     [
-      (* FIXME: Should be reusing render_section *)
       HTML.section
         [class_ "block"]
         [
           details
-            [
-              (* TODO: check if expanded*)
-              open_
-            ] @@
+            [open_] @@
             summary
               []
-              [render_frontmatter forest article.frontmatter] :: render_content forest article.mainmatter;
+              [render_frontmatter forest ?label: article.frontmatter.number article.frontmatter] :: render_content forest article.mainmatter;
         ];
       match article.frontmatter.uri with
-      | None -> footer [] @@ render_backmatter forest article.backmatter
-      | Some uri ->
-        if URI.equal (Config.home_uri forest.config) uri then null []
-        else footer [] @@ render_backmatter forest article.backmatter
+      | Some uri when URI.equal (Config.home_uri forest.config) uri -> null []
+      | _ -> footer [] @@ render_backmatter forest article.backmatter
     ]
 
-and render_section (forest : State.t) (section : T.content T.section) : node =
+and render_section ?label (forest : State.t) (section : T.content T.section) : node =
   match section with
   | {frontmatter; mainmatter; flags} ->
     let test k = function
@@ -216,33 +218,27 @@ and render_section (forest : State.t) (section : T.content T.section) : node =
       if test false flags.metadata_shown then class_ "block"
       else class_ "block hide-metadata"
     in
-    let data_taxon =
-      match frontmatter.taxon with
+    let id_ =
+      match section_id section label with
+      | Some s -> id "%s" s
       | None -> null_
-      | Some _c ->
-        (* string_attr "data-taxon" () *)
-        null_
     in
     HTML.section
-      [
-        class_;
-        data_taxon;
-      ]
+      [class_; id_]
       [
         if test true flags.header_shown then
           details
             [if test true flags.expanded then open_ else null_]
             [
-              summary [] [render_frontmatter forest frontmatter];
+              summary [] [render_frontmatter forest ?label frontmatter];
               null @@ render_content forest mainmatter;
             ]
         else null @@ render_content forest mainmatter;
-        (* render_frontmatter forest frontmatter; *)
-        (* null @@ render_content forest mainmatter; *)
       ]
 
 (* Same as render_section, but adds the backmatter-section class *)
 and render_backmatter (forest : State.t) backmatter =
+  let@ () = with_ctx {!current_ctx with in_backmatter = true} in
   let@ node = List.map @~ render_content forest backmatter in
   let attrs = Format.asprintf "%s backmatter-section" node.@["class"] in
   node +@ class_ "%s" attrs
@@ -278,12 +274,16 @@ and render_attributions forest (attributions : T.content T.attribution list) =
       List.map render_attribution contributors
     ]
 
-and render_frontmatter (forest : State.t) (frontmatter : T.content T.frontmatter) : node =
-  let taxon =
-    Option.value ~default: [] @@
-      let@ c = Option.map @~ frontmatter.taxon in
-      render_content forest c @ [txt ". "]
-  in
+(* The taxon and number shown before a title, e.g. "Definition 1.2. " *)
+and render_taxon_with_number ?label (forest : State.t) (frontmatter : T.content T.frontmatter) =
+  let taxon = Option.map (render_content forest) frontmatter.taxon in
+  span [class_ "taxon"] @@
+  Option.value ~default: [] taxon @
+  (if Option.is_some taxon && Option.is_some label then [txt "%s" nbsp] else []) @
+  (match label with Some l -> [txt "%s" l] | None -> []) @
+  (if Option.is_some taxon || Option.is_some label then [txt ".%s" nbsp] else [])
+
+and render_frontmatter ?label (forest : State.t) (frontmatter : T.content T.frontmatter) : node =
   let title =
     Option.value ~default: [] @@
       let@ c = Option.map @~ frontmatter.title in
@@ -293,13 +293,9 @@ and render_frontmatter (forest : State.t) (frontmatter : T.content T.frontmatter
     match frontmatter.uri with
     | None -> null []
     | Some uri ->
-      let uri_str =
-        (* TODO: replace with proper routing from legacy xml client *)
-        "/trees" ^ URI.path_string uri
-      in
       a
-        [class_ "slug"; href "%s" uri_str;]
-        [txt "[%s]" uri_str]
+        [class_ "slug"; href "%s" (route_string uri);]
+        [txt "[%s]" (URI.display_path_string ~base: forest.config.url uri)]
   in
   let source_path =
     match frontmatter.source_path with
@@ -370,7 +366,7 @@ and render_frontmatter (forest : State.t) (frontmatter : T.content T.frontmatter
   header
     []
     [
-      h1 [] @@ [span [class_ "taxon"] taxon] @ title @ [txt " "; uri] @ source_path;
+      h1 [] @@ [render_taxon_with_number ?label forest frontmatter] @ title @ [txt " "; uri; txt " "] @ source_path;
       div
         [class_ "metadata"]
         [
@@ -391,24 +387,35 @@ and render_frontmatter (forest : State.t) (frontmatter : T.content T.frontmatter
         ];
     ]
 
-and render_transclusion transclusion =
-  match transclusion with
-  | T.{href; target} ->
-    let headers = Yojson.Safe.to_string @@ content_target_to_http_header target in
-    [
-      span
-        [
-          Hx.trigger "load";
-          Hx.get "/trees%s" (URI.path_string href);
-          Hx.target "this";
-          Hx.swap "outerHTML";
-          Hx.headers "%s" headers;
-        ]
-        [txt "transclusion: %s" (Format.asprintf "%a" URI.pp href)]
-    ]
+and render_transclusion_node (forest : State.t) (transclusion : T.transclusion) =
+  if is_ancestor transclusion.href then
+    [span [class_ "error"] [txt "Transclusion loop detected: %s" (URI.to_string transclusion.href)]]
+  else
+    match State.get_content_of_transclusion transclusion forest with
+    | None -> []
+    | Some content ->
+      let ctx = !current_ctx in
+      let ancestors =
+        match transclusion.target with
+        | Full _ | Mainmatter -> transclusion.href :: ctx.ancestors
+        | Title _ | Taxon -> ctx.ancestors
+      in
+      let@ () = with_ctx {ctx with ancestors} in
+      render_content forest content
 
 and render_content (forest : State.t) (Content content: T.content) : node list =
-  List.concat_map (render_content_node forest) content
+  let content = List.map (inline_full_transclusion forest) content in
+  let sections =
+    List.filter_map (function T.Section s -> Some s | _ -> None) content
+  in
+  let numbered = ref (number_siblings forest sections) in
+  let@ node = List.concat_map @~ content in
+  match node, !numbered with
+  | T.Section _, (section, label, ctx) :: rest ->
+    numbered := rest;
+    let@ () = with_ctx ctx in
+    [render_section ?label forest section]
+  | _ -> render_content_node forest node
 
 and render_content_node (forest : State.t) (node : 'a T.content_node) : node list =
   match node with
@@ -429,35 +436,20 @@ and render_content_node (forest : State.t) (node : 'a T.content_node) : node lis
     in
     [std_tag name attrs content]
   | Transclude transclusion ->
-    render_transclusion transclusion
+    render_transclusion_node forest transclusion
   | Contextual_number addr ->
     begin
-      match (State.get_article addr) forest with
-      | Some a ->
-        [
-          contextual_number
-            (T.article_to_section a)
-            (default_toc_config ())
-        ]
+      match State.get_article addr forest with
+      | Some {frontmatter = {number = Some number; _}; _} -> [txt "%s" number]
+      | Some _ -> [txt "[%s]" (URI.display_path_string ~base: forest.config.url addr)]
       | None -> []
     end
-
-  (* let custom_number = *)
-  (*   article.frontmatter.number *)
-  (* in *)
-  (* let num = *)
-  (*   match custom_number with *)
-  (*   | None -> Format.asprintf "[%a]" URI.pp addr *)
-  (*   | Some num -> num *)
-  (* in *)
-  (* [txt "%s" num] *)
   | Link link ->
     render_link forest link
   | Section section ->
     [render_section forest section]
   | KaTeX (mode, content) ->
     let body = Plain_text_client.string_of_content ~forest content in
-    (* [txt ~raw: true "%s%s%s" l body r] *)
     begin
       match mode with
       | Inline ->
@@ -504,6 +496,8 @@ and render_link (forest : State.t) (link : T.content T.link) : node list =
       begin
         match article.frontmatter.uri with
         | Some _uri ->
+          (* A plain link: the body is boosted, so htmx fetches the full page
+             (including header and table of contents) and pushes the URL. *)
           [
             title_ "%s" @@
             Option.value ~default: "" @@
@@ -514,9 +508,7 @@ and render_link (forest : State.t) (link : T.content T.link) : node list =
                   ~router: (Legacy_xml_client.route forest)
               )
               article.frontmatter.title;
-            href "/trees%s" (Format.asprintf "%s" (URI.path_string link.href));
-            Hx.target "#tree-container";
-            Hx.swap "innerHTML";
+            href "%s" (route_string link.href);
           ]
         | None -> [HTML.null_]
       end;
@@ -527,102 +519,84 @@ and render_link (forest : State.t) (link : T.content T.link) : node list =
       [a attrs (render_content forest link.content)]
   ]
 
-and contextual_number (_tree : T.content T.section) (cfg : toc_config) =
-  let should_number =
-    cfg.number <> ""
-    || (
-      not cfg.in_backmatter
-      && not cfg.is_root
-      && not cfg.implicitly_unnumbered
-    )
-  in
-  let taxon =
-    if cfg.taxon <> "" then
-      cfg.taxon ^
-        if should_number || cfg.fallback_number <> "" then " "
-        else ""
-    else ""
-  in
-  let number =
-    if should_number then
-      if cfg.number <> String.empty then cfg.number
-      else
-        (* TODO: Implement this:
-            <xsl:number format="1.1" count="f:tree[ancestor::f:tree and (not(@toc='false' or @numbered='false'))]" level="multiple" />
-        *)
-        assert false
-    else if cfg.fallback_number <> String.empty then
-      cfg.fallback_number
-    else ""
-  in
-  let suffix =
-    if cfg.taxon <> String.empty
-      || cfg.fallback_number <> String.empty
-      || should_number then cfg.suffix
-    else ""
-  in
-  null [txt "%s %s %s" taxon suffix number]
-
-and _tree_taxon_with_number (_tree : T.content T.section) cfg =
-  (*TODO: Implement.*)
-  contextual_number _tree cfg
-
-and _render_toc_item (forest : State.t) (item : T.content T.section) =
-  let to_str = Plain_text_client.string_of_content ~forest ~router: (Legacy_xml_client.route forest) in
-  null
-    [
-      a
-        [
-          class_ "bullet";
-          href "";
-          title_
-            "%s%s"
-            (Option.value ~default: "" @@ Option.map to_str item.frontmatter.title)
-            (
-              Option.value ~default: "" @@
-                Option.map (Format.asprintf "[%a]" URI.pp) item.frontmatter.uri
-            )
-        ]
-        [txt "■"];
-      span
-        [class_ "link local"]
-        [
-          span
-            [class_ "taxon"]
-            [_tree_taxon_with_number item (default_toc_config ())];
-          (* null @@ render_content forest item.mainmatter; *)
-        ];
-      ul [] (render_content forest item.mainmatter)
-    ]
-
-and render_toc_mainmatter content =
-  let T.Content nodes = content in
-  ul [class_ "block"] @@
-    let@ node = List.filter_map @~ nodes in
-    match node with
-    | T.Section section ->
-      Some (render_toc section)
-    | _ -> None
-
-and render_toc (section : T.content T.section) =
-  if Some false
-    = List.find_map
-        (fun (k, v) ->
-          if k = "toc" && v = T.Content [T.Text "true"] then Some true
-          else None
-        )
-        section.frontmatter.metas then null []
+let rec render_toc_items (forest : State.t) (content : T.content) : node list =
+  let sections = child_sections forest content in
+  let@ section, label, ctx = List.filter_map @~ number_siblings forest sections in
+  if section.flags.included_in_toc = Some false then None
   else
-    nav
-      [id "toc"; Hx.swap_oob "true"]
+    Option.some @@
+    let@ () = with_ctx ctx in
+    let title =
+      Option.value ~default: [] @@
+      Option.map (render_content forest) section.frontmatter.title
+    in
+    let title_text =
+      Option.value ~default: "" @@
+      Option.map
+        (Plain_text_client.string_of_content ~forest ~router: (Legacy_xml_client.route forest))
+        section.frontmatter.title
+    in
+    let anchor = Option.map (Format.sprintf "#%s") (section_id section label) in
+    let bullet_href, bullet_title =
+      match section.frontmatter.uri with
+      | Some uri -> route_string uri, Format.sprintf "%s%s[%s]" title_text nbsp (URI.display_path_string ~base: forest.config.url uri)
+      | None -> Option.value ~default: "" anchor, title_text
+    in
+    let children = render_toc_items forest section.mainmatter in
+    li
+      []
       [
-        div
-          [class_ "block"]
+        a [class_ "bullet"; href "%s" bullet_href; title_ "%s" bullet_title] [txt "■"];
+        span
           [
-            h1 [] [txt "Table of contents"];
-            render_toc_mainmatter section.mainmatter;
+            class_ "link local";
+            (match anchor with Some a -> string_attr "data-target" "%s" a | None -> null_)
           ]
+          (render_taxon_with_number ?label forest section.frontmatter :: title);
+        if children = [] then null [] else ul [class_ "block"] children
       ]
+
+(* The table of contents, as in tree.xsl: shown when the mainmatter has
+   sections in the table of contents, unless the tree has [\meta{toc}{false}]. *)
+let render_toc (forest : State.t) (article : T.content T.article) : node option =
+  let@ () = Xmlns.run ~reserved: [] in
+  let@ () = with_ctx {root_ctx with ancestors = Option.to_list article.frontmatter.uri} in
+  let toc_disabled =
+    List.exists (fun (k, v) -> k = "toc" && v = T.Content [T.Text "false"]) article.frontmatter.metas
+  in
+  match render_toc_items forest article.mainmatter with
+  | [] -> None
+  | _ when toc_disabled -> None
+  | items ->
+    Some
+      (nav
+        [id "toc"]
+        [
+          div
+            [class_ "block"]
+            [
+              h1 [] [txt "Table of Contents"];
+              ul [class_ "block"] items;
+            ]
+        ])
+
+(* The site header with a link home, shown on every tree except the home tree. *)
+let render_header (forest : State.t) (article : T.content T.article) : node =
+  let is_home =
+    Option.fold ~none: false ~some: (URI.equal (Config.home_uri forest.config)) article.frontmatter.uri
+  in
+  header
+    [class_ "header"]
+    (
+      if is_home then []
+      else [nav [class_ "nav"] [div [class_ "logo"] [a [href "/"; title_ "Home"] [txt "« Home"]]]]
+    )
+
+let render_title (forest : State.t) (article : T.content T.article) : string =
+  Option.value ~default: "" @@
+  Option.map
+    (Plain_text_client.string_of_content ~forest ~router: (Legacy_xml_client.route forest))
+    article.frontmatter.title
 
 let render_transclusion (forest : State.t) (content : T.content) =
   let@ () = Xmlns.run ~reserved: [] in
@@ -630,6 +604,7 @@ let render_transclusion (forest : State.t) (content : T.content) =
 
 let render_query_result (forest : State.t) (vs : Vertex_set.t) =
   let@ () = Xmlns.run ~reserved: [] in
+  let@ () = with_ctx {root_ctx with in_backmatter = true} in
   let module C = Types.Comparators(struct
     let string_of_content =
       Plain_text_client.string_of_content

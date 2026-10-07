@@ -31,6 +31,38 @@ let raw_trees = [
   {path = "c.tree"; content = {|\title{Tree C}
 \p{Not linked to anything.}
 |}};
+  {path = "index.tree"; content = {|\title{Home}
+\p{Welcome.}
+|}};
+  (* Mirrors the numbering rules of tree.xsl: s2 has a single child section
+     with no children of its own, so that child is implicitly unnumbered. *)
+  {path = "parent.tree"; content = {|\title{Parent}
+\transclude{s1}
+\transclude{s2}
+\subtree{\title{Inline}\p{Inline body.}}
+|}};
+  {path = "s1.tree"; content = {|\taxon{Definition}\title{First}
+\p{Body of s1.}
+\transclude{s1a}
+\transclude{s1b}
+|}};
+  {path = "s1a.tree"; content = {|\title{First A}
+\p{Body of s1a.}
+|}};
+  {path = "s1b.tree"; content = {|\title{First B}
+|}};
+  {path = "s2.tree"; content = {|\title{Second}
+\transclude{s2a}
+|}};
+  {path = "s2a.tree"; content = {|\title{Second A}
+|}};
+  {path = "notoc.tree"; content = {|\title{No TOC}
+\meta{toc}{false}
+\transclude{s1a}
+|}};
+  {path = "loop.tree"; content = {|\title{Loop}
+\transclude{loop}
+|}};
 ]
 
 let uri name = URI_scheme.named_uri ~base: config.url name
@@ -68,6 +100,81 @@ let check_contains msg ~sub str =
 let check_absent msg ~sub str =
   if contains ~sub str then
     Alcotest.failf "%s: did not expect %S in@.%s" msg sub str
+
+(* The visible text of some HTML, with non-breaking spaces as spaces. *)
+let text_of html =
+  let buf = Buffer.create (String.length html) in
+  let in_tag = ref false in
+  String.iter
+    (fun c ->
+      match c with
+      | '<' -> in_tag := true
+      | '>' -> in_tag := false
+      | c when not !in_tag -> Buffer.add_char buf c
+      | _ -> ()
+    )
+    html;
+  Buffer.contents buf
+  |> Str.global_replace (Str.regexp_string "\u{00A0}") " "
+  |> Str.global_replace (Str.regexp "[ \n]+") " "
+
+let render_page forest name =
+  let article = get_article forest name in
+  let toc = Option.map Pure_html.to_string (Htmx_client.render_toc forest article) in
+  normalise @@ Pure_html.to_string (Htmx_client.render_article forest article), toc
+
+let test_inline_transclusions ~env () =
+  let@ forest = with_forest ~env in
+  let html, _ = render_page forest "parent" in
+  check_contains "transcluded body" ~sub: "Body of s1." html;
+  check_contains "nested transcluded body" ~sub: "Body of s1a." html;
+  check_absent "no lazy transclusions" ~sub: "transclusion:" html;
+  check_absent "no lazy requests for trees" ~sub: {|hx-get="/trees|} html
+
+let test_numbering ~env () =
+  let@ forest = with_forest ~env in
+  let html, _ = render_page forest "parent" in
+  let text = text_of html in
+  check_contains "taxon and number" ~sub: "Definition 1. First" text;
+  check_contains "nested numbers" ~sub: "1.1. First A" text;
+  check_contains "second nested number" ~sub: "1.2. First B" text;
+  check_contains "second section" ~sub: "2. Second" text;
+  check_contains "inline subtree" ~sub: "3. Inline" text;
+  check_absent "only child without children is unnumbered" ~sub: "2.1. Second A" text;
+  check_contains "unnumbered child still rendered" ~sub: "Second A" text;
+  check_absent "root is unnumbered" ~sub: ". Parent" text
+
+let test_toc ~env () =
+  let@ forest = with_forest ~env in
+  begin
+    match render_page forest "parent" with
+    | _, None -> Alcotest.fail "Parent should have a table of contents"
+    | _, Some toc ->
+      let text = text_of toc in
+      check_contains "heading" ~sub: "Table of Contents" text;
+      check_contains "numbered entry" ~sub: "Definition 1. First" text;
+      check_contains "nested entry" ~sub: "1.2. First B" text;
+      check_contains "entry links to tree" ~sub: {|href="/trees/s1a/"|} toc
+  end;
+  Alcotest.(check (option string)) "leaf has no TOC" None (snd (render_page forest "s1a"));
+  Alcotest.(check (option string)) "toc=false is respected" None (snd (render_page forest "notoc"))
+
+let test_loop ~env () =
+  let@ forest = with_forest ~env in
+  let html, _ = render_page forest "loop" in
+  check_contains "loop is reported" ~sub: "Transclusion loop detected" html
+
+let test_header ~env () =
+  let@ forest = with_forest ~env in
+  let header name = Pure_html.to_string (Htmx_client.render_header forest (get_article forest name)) in
+  check_contains "link home" ~sub: "« Home" (header "parent");
+  check_absent "no link home on the home tree" ~sub: "« Home" (header "index");
+  Alcotest.(check string) "page title" "Parent" (Htmx_client.render_title forest (get_article forest "parent"))
+
+let test_slug ~env () =
+  let@ forest = with_forest ~env in
+  let html, _ = render_page forest "s1a" in
+  check_contains "slug shows the short address" ~sub: {|href="/trees/s1a/">[s1a]</a>|} html
 
 let test_xhtml_names () =
   let xhtml = Some "http://www.w3.org/1999/xhtml" in
@@ -146,6 +253,15 @@ let () =
         test_case "XHTML names lose their prefix" `Quick test_xhtml_names;
         test_case "mainmatter renders as HTML" `Quick (test_mainmatter_is_html ~env);
         test_case "article renders as HTML" `Quick (test_article_is_html ~env);
+      ];
+      "page structure",
+      [
+        test_case "transclusions are inlined" `Quick (test_inline_transclusions ~env);
+        test_case "sections are numbered like tree.xsl" `Quick (test_numbering ~env);
+        test_case "table of contents" `Quick (test_toc ~env);
+        test_case "transclusion loops are reported" `Quick (test_loop ~env);
+        test_case "header and title" `Quick (test_header ~env);
+        test_case "slug" `Quick (test_slug ~env);
       ];
       "queries",
       [

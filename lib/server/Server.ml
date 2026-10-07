@@ -34,10 +34,29 @@ let load_theme ~env theme_location =
   let font_dir = EP.(native_exn @@ theme_dir / "fonts") in
   {stylesheet; htmx; js_bundle; font_dir; favicon;}
 
+let html_headers = Http.Header.of_list ["Content-Type", "text/html; charset=utf-8"]
+
+(* A complete page for a tree: header, article and table of contents. *)
+let full_page (forest : State.t) article =
+  Pure_html.to_string @@
+    Index.v
+      ~title_text: (Htmx_client.render_title forest article)
+      ~header_: (Htmx_client.render_header forest article)
+      ~c: (Htmx_client.render_article forest article)
+      ?toc: (Htmx_client.render_toc forest article)
+      ()
+
+let respond_full_page (forest : State.t) uri =
+  match State.get_article uri forest with
+  | Some article ->
+    Cohttp_eio.Server.respond_string ~headers: html_headers ~status: `OK ~body: (full_page forest article) ()
+  | None ->
+    Cohttp_eio.Server.respond_string ~status: `Not_found ~body: "" ()
+
 let lookup_font ~env theme font =
   Eio.Path.(load (env#fs / theme.font_dir / font))
 
-let handler
+let handle_request
   : env: < fs: [> Eio.Fs.dir_ty] Eio.Path.t; .. > ->
   theme: theme ->
   forest: State.t ->
@@ -75,14 +94,13 @@ let handler
         in
         Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body ()
       | Stylesheet ->
-        let headers = Http.Header.of_list ["Content-Type", "text/css"; "charset", "utf-8"] in
+        let headers = Http.Header.of_list ["Content-Type", "text/css; charset=utf-8"] in
         Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: theme.stylesheet ()
       | Js_bundle ->
-        let headers = Http.Header.of_list ["Content-Type", "application/javascript"] in
+        let headers = Http.Header.of_list ["Content-Type", "application/javascript; charset=utf-8"] in
         Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: theme.js_bundle ()
       | Index ->
-        let headers = Http.Header.of_list ["Content-Type", "text/html"] in
-        Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: (Pure_html.to_string (Index.v ())) ()
+        respond_full_page forest (Config.home_uri forest.config)
       | Favicon ->
         let headers = Http.Header.of_list ["Content-Type", "image/x-icon"] in
         Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: theme.favicon ()
@@ -95,7 +113,10 @@ let handler
             happens for example when the user opens a link via the URL bar of
             the browser.
           *)
-          Option.is_some @@ Http.Header.get request_headers "Hx-Request"
+          Option.is_some (Http.Header.get request_headers "Hx-Request")
+          (* Boosted navigations (ordinary link clicks) swap the whole body,
+             so they need the full page including header and TOC. *)
+          && Option.is_none (Http.Header.get request_headers "Hx-Boosted")
         in
         begin
           if is_htmx then
@@ -111,7 +132,7 @@ let handler
                     Cohttp_eio.Server.respond_string ~status: `Not_found ~body: "" ()
                   | Some content ->
                     let response = Pure_html.to_string @@ Htmx_client.render_article forest content in
-                    Cohttp_eio.Server.respond_string ~status: `OK ~body: response ()
+                    Cohttp_eio.Server.respond_string ~headers: html_headers ~status: `OK ~body: response ()
                 end
               | Some target ->
                 match State.get_content_of_transclusion {target; href} forest with
@@ -121,13 +142,7 @@ let handler
                   let response = Pure_html.(to_string @@ HTML.span [] (Htmx_client.render_transclusion forest content)) in
                   Cohttp_eio.Server.respond_string ~status: `OK ~body: response ()
             end
-          else
-            match State.get_article href forest with
-            | Some article ->
-              let content = Pure_html.to_string @@ Index.v ~c: (Htmx_client.render_article forest article) () in
-              let headers = Http.Header.of_list ["Content-Type", "text/html"] in
-              Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: content ()
-            | None -> Cohttp_eio.Server.respond_string ~status: `Not_found ~body: "" ()
+          else respond_full_page forest href
         end
       | Search ->
         if request.meth = `POST then
@@ -182,7 +197,7 @@ let handler
             Cohttp_eio.Server.respond_string ~status: `OK ~body: "" ()
           | Some home_tree ->
             let content = Pure_html.to_string @@ Htmx_client.render_article forest home_tree in
-            let headers = Http.Header.of_list ["Content-Type", "text/html"] in
+            let headers = html_headers in
             Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: content ()
         end
       | Query ->
@@ -232,11 +247,23 @@ let handler
               ()
         end
       | Htmx ->
-        let headers = Http.Header.of_list ["Content-Type", "application/javascript"] in
+        let headers = Http.Header.of_list ["Content-Type", "application/javascript; charset=utf-8"] in
         Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: theme.htmx ()
     end
   | Routes.NoMatch ->
     Cohttp_eio.Server.respond_string ~status: `Not_found ~body: "" ()
+
+(* Eio runs each connection in its own fiber, which does not inherit the
+   reporter installed by the CLI; without this, any code path that reports a
+   diagnostic (e.g. running a datalog query) raises "Unhandled asai effect"
+   and the connection is dropped. *)
+let handler ~env ~theme ~forest socket request body =
+  let fatal diagnostic =
+    Reporter.Tty.display diagnostic;
+    Cohttp_eio.Server.respond_string ~status: `Internal_server_error ~body: "" ()
+  in
+  Reporter.run ~emit: Reporter.Tty.display ~fatal @@ fun () ->
+  handle_request ~env ~theme ~forest socket request body
 
 let log_warning ex = Logs.warn (fun f -> f "%a" Eio.Exn.pp ex)
 

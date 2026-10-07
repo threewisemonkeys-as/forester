@@ -1,0 +1,23 @@
+;;; SPDX-FileCopyrightText: 2024 The Forester Project Contributors
+;;;
+;;; SPDX-License-Identifier: GPL-3.0-or-later
+
+(test
+ (name Test_server)
+ (libraries
+  alcotest
+  eio
+  eio_main
+  eio.core
+  eio.unix
+  http
+  cohttp-eio
+  uri
+  yojson
+  str
+  repr
+  forester.prelude
+  forester.core
+  forester.compiler
+  forester.server
+  forester.test))

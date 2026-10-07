@@ -23,6 +23,7 @@
   logs
   pure-html
   repr
+  str
   forester.prelude
   forester.core
   forester.compiler
@@ -39,5 +40,6 @@
   forester.frontend
   pure-html
   repr
+  str
   eio_main
   logs))

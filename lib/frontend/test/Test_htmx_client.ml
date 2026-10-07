@@ -39,7 +39,10 @@ let raw_trees = [
   {path = "parent.tree"; content = {|\title{Parent}
 \transclude{s1}
 \transclude{s2}
-\subtree{\title{Inline}\p{Inline body.}}
+\subtree{\title{Inline}\p{Inline body.}
+  \subtree{\title{Nested one}}
+  \subtree{\title{Nested two}}
+}
 |}};
   {path = "s1.tree"; content = {|\taxon{Definition}\title{First}
 \p{Body of s1.}
@@ -140,6 +143,7 @@ let test_numbering ~env () =
   check_contains "second nested number" ~sub: "1.2. First B" text;
   check_contains "second section" ~sub: "2. Second" text;
   check_contains "inline subtree" ~sub: "3. Inline" text;
+  check_contains "nested inline subtree" ~sub: "3.2. Nested two" text;
   check_absent "only child without children is unnumbered" ~sub: "2.1. Second A" text;
   check_contains "unnumbered child still rendered" ~sub: "Second A" text;
   check_absent "root is unnumbered" ~sub: ". Parent" text
@@ -154,7 +158,9 @@ let test_toc ~env () =
       check_contains "heading" ~sub: "Table of Contents" text;
       check_contains "numbered entry" ~sub: "Definition 1. First" text;
       check_contains "nested entry" ~sub: "1.2. First B" text;
-      check_contains "entry links to tree" ~sub: {|href="/trees/s1a/"|} toc
+      check_contains "entry links to tree" ~sub: {|href="/trees/s1a/"|} toc;
+      check_contains "inline subtree anchor" ~sub: {|data-target="#section-3-2"|} toc;
+      check_absent "anchors are valid CSS selectors" ~sub: {|#section-3.2|} toc
   end;
   Alcotest.(check (option string)) "leaf has no TOC" None (snd (render_page forest "s1a"));
   Alcotest.(check (option string)) "toc=false is respected" None (snd (render_page forest "notoc"))

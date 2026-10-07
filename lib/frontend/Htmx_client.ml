@@ -183,7 +183,8 @@ let number_siblings (forest : State.t) (sections : T.content T.section list) =
 let section_id (section : T.content T.section) label =
   match section.frontmatter.uri, label with
   | Some uri, _ -> Some ("tree-" ^ String.concat "-" (List.filter (( <> ) "") (URI.path_components uri)))
-  | None, Some label -> Some ("section-" ^ label)
+  (* Ids are used as CSS selectors by the TOC, so avoid dots. *)
+  | None, Some label -> Some ("section-" ^ String.map (function '.' -> '-' | c -> c) label)
   | None, None -> None
 
 let rec render_article (forest : State.t) (article : T.content T.article) : node =

@@ -57,6 +57,27 @@ document.addEventListener("click", (e) => {
 });
 |}
 
+(* Live reload: poll the server's build id and reload the page when it
+   changes (the preview script restarts the server whenever a tree changes).
+   While the server is restarting the request fails and polling continues. *)
+let live_reload_script = {|
+(() => {
+  let current = null;
+  const poll = async () => {
+    try {
+      const response = await fetch("/build-id", { cache: "no-store" });
+      if (response.ok) {
+        const id = (await response.text()).trim();
+        if (current === null) current = id;
+        else if (id !== current) { location.reload(); return; }
+      }
+    } catch (_) {}
+    setTimeout(poll, 1000);
+  };
+  poll();
+})();
+|}
+
 let v ?(title_text = "") ?(header_ = header [] []) ?c ?toc () =
   let tree_container =
     match c with
@@ -89,6 +110,7 @@ let v ?(title_text = "") ?(header_ = header [] []) ?c ?toc () =
           title [] "%s" title_text;
           style [] "%s" palette_style;
           script [] "%s" shortcuts_script;
+          script [] "%s" live_reload_script;
         ];
       body
         [Hx.boost true;]

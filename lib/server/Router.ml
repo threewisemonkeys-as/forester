@@ -19,6 +19,7 @@ type route =
   | Home
   | Query
   | Htmx
+  | Build_id
 
 let routes : route router =
   one_of
@@ -35,4 +36,5 @@ let routes : route router =
       route (s "home" /? nil) Home;
       route (s "query" /? nil) Query;
       route (s "htmx.js" /? nil) Htmx;
+      route (s "build-id" /? nil) Build_id;
     ]

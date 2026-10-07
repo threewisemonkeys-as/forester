@@ -34,6 +34,10 @@ let load_theme ~env theme_location =
   let font_dir = EP.(native_exn @@ theme_dir / "fonts") in
   {stylesheet; htmx; js_bundle; font_dir; favicon;}
 
+(* Identifies this server process. The page polls it and reloads when it
+   changes, i.e. after the server was restarted on a change to the forest. *)
+let build_id = Printf.sprintf "%d-%.0f" (Unix.getpid ()) (Unix.gettimeofday () *. 1000.)
+
 let html_headers = Http.Header.of_list ["Content-Type", "text/html; charset=utf-8"]
 
 (* A complete page for a tree: header, article and table of contents. *)
@@ -230,6 +234,9 @@ let handle_request
               ~body: ""
               ()
         end
+      | Build_id ->
+        let headers = Http.Header.of_list ["Content-Type", "text/plain"; "Cache-Control", "no-store"] in
+        Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: build_id ()
       | Htmx ->
         let headers = Http.Header.of_list ["Content-Type", "application/javascript; charset=utf-8"] in
         Cohttp_eio.Server.respond_string ~headers ~status: `OK ~body: theme.htmx ()

@@ -198,6 +198,15 @@ let test_backmatter_queries ~env () =
   in
   Alcotest.(check bool) "Backlinks section is filled" true (List.exists (contains ~sub: "/trees/b/") bodies)
 
+let test_live_reload ~env () =
+  let@ get, _ = with_server ~env in
+  let first = get "/build-id" and second = get "/build-id" in
+  Alcotest.(check int) "status" 200 first.status;
+  Alcotest.(check bool) "build id is non-empty" true (String.length first.body > 0);
+  Alcotest.(check string) "build id is stable within a run" first.body second.body;
+  Alcotest.(check (option string)) "not cached" (Some "no-store") (Http.Header.get first.headers "Cache-Control");
+  check_contains "pages poll the build id" ~sub: {|fetch("/build-id"|} (get "/trees/a/").body
+
 let search_titles (post : ?headers: (string * string) list -> string -> (string * string) list -> response) form =
   let r = post ~headers: htmx "/search" form in
   Alcotest.(check int) "status" 200 r.status;
@@ -237,6 +246,7 @@ let () =
         test_case "boosted navigation gets full page" `Quick (test_boosted ~env);
         test_case "home page" `Quick (test_home ~env);
         test_case "charsets" `Quick (test_charsets ~env);
+        test_case "live reload" `Quick (test_live_reload ~env);
         test_case "transclusion" `Quick (test_transclusion ~env);
       ];
       "queries",

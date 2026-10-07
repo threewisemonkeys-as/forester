@@ -34,6 +34,7 @@ let raw_trees = [
   {path = "parent.tree"; content = {|\title{Parent}
 \transclude{a}
 \transclude{c}
+\subtree{\title{Inline}\p{Mentions Kepler.}}
 |}};
 ]
 
@@ -79,6 +80,15 @@ let with_server ~env kont =
     | _ -> assert false
   in
   let client = Cohttp_eio.Client.make ~https: None env#net in
+  let post ?(headers = []) path form =
+    let@ sw = Eio.Switch.run ?name: None in
+    let uri = Uri.of_string (Format.sprintf "http://127.0.0.1:%i%s" port path) in
+    let headers = Http.Header.of_list (("Content-Type", "application/x-www-form-urlencoded") :: headers) in
+    let body = Cohttp_eio.Body.of_string (Uri.encoded_of_query (List.map (fun (k, v) -> k, [v]) form)) in
+    let resp, body = Cohttp_eio.Client.post client ~sw ~headers ~body uri in
+    let body = Eio.Buf_read.(parse_exn take_all) body ~max_size: max_int in
+    {status = Http.Status.to_int resp.status; headers = resp.headers; body}
+  in
   let get ?(headers = []) path =
     let@ sw = Eio.Switch.run ?name: None in
     let uri = Uri.of_string (Format.sprintf "http://127.0.0.1:%i%s" port path) in
@@ -89,12 +99,12 @@ let with_server ~env kont =
   let server = Cohttp_eio.Server.make ~callback: (Server.handler ~env ~theme ~forest) () in
   Eio.Fiber.first
     (fun () -> Cohttp_eio.Server.run socket server ~on_error: raise)
-    (fun () -> kont get)
+    (fun () -> kont (get, post))
 
 let htmx = ["HX-Request", "true"]
 
 let test_article ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let r = get ~headers: htmx "/trees/a/" in
   Alcotest.(check int) "status" 200 r.status;
   check_contains "paragraph" ~sub: "<p>Hello <strong>world</strong>.</p>" r.body;
@@ -109,7 +119,7 @@ let check_full_page r =
   check_contains "charset" ~sub: {|charset="utf-8"|} r.body
 
 let test_full_page ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let r = get "/trees/parent/" in
   check_full_page r;
   check_contains "title" ~sub: "<title>Parent</title>" r.body;
@@ -120,13 +130,13 @@ let test_full_page ~env () =
 (* Link clicks are boosted by htmx and swap the whole body, so they must get
    the full page (with header and table of contents), not a fragment. *)
 let test_boosted ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let r = get ~headers: (("HX-Boosted", "true") :: htmx) "/trees/parent/" in
   check_full_page r;
   check_contains "table of contents" ~sub: {|id="toc"|} r.body
 
 let test_home ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let r = get "/" in
   check_full_page r;
   check_contains "home tree" ~sub: "<title>Home</title>" r.body;
@@ -134,13 +144,13 @@ let test_home ~env () =
   check_absent "no link home on the home page" ~sub: "« Home" r.body
 
 let test_charsets ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let content_type path = Http.Header.get (get path).headers "Content-Type" in
   Alcotest.(check (option string)) "stylesheet" (Some "text/css; charset=utf-8") (content_type "/style.css");
   Alcotest.(check (option string)) "script" (Some "application/javascript; charset=utf-8") (content_type "/min.js")
 
 let test_transclusion ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let r = get ~headers: (("Mainmatter", "true") :: htmx) "/trees/a/" in
   Alcotest.(check int) "status" 200 r.status;
   check_contains "transcluded body" ~sub: "<li>first</li>" r.body
@@ -154,7 +164,7 @@ let backlinks name =
   query_path @@ Builtin_queries.backlinks_datalog (T.Uri_vertex (URI_scheme.named_uri ~base: config.url name))
 
 let test_backlinks ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let r = get ~headers: htmx (backlinks "a") in
   Alcotest.(check int) "status" 200 r.status;
   check_contains "backlink from B" ~sub: "Tree <strong>B</strong>" r.body;
@@ -162,13 +172,13 @@ let test_backlinks ~env () =
   check_absent "no unrelated trees" ~sub: "Tree C" r.body
 
 let test_empty_query ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let r = get ~headers: htmx (backlinks "c") in
   Alcotest.(check int) "status" 200 r.status;
   Alcotest.(check (option string)) "section is deleted" (Some "delete") (Http.Header.get r.headers "Hx-Swap")
 
 let test_backmatter_queries ~env () =
-  let@ get = with_server ~env in
+  let@ get, _ = with_server ~env in
   let page = (get ~headers: htmx "/trees/a/").body in
   let re = Str.regexp {|hx-vals='\([^']*\)'|} in
   let rec collect pos acc =
@@ -187,6 +197,32 @@ let test_backmatter_queries ~env () =
     r.body
   in
   Alcotest.(check bool) "Backlinks section is filled" true (List.exists (contains ~sub: "/trees/b/") bodies)
+
+let search_titles (post : ?headers: (string * string) list -> string -> (string * string) list -> response) form =
+  let r = post ~headers: htmx "/search" form in
+  Alcotest.(check int) "status" 200 r.status;
+  r.body
+
+let test_search ~env () =
+  let@ _, post = with_server ~env in
+  let all = search_titles post ["search", ""; "search-for", "title"] in
+  List.iter (fun t -> check_contains "empty search lists every tree" ~sub: t all) ["Tree A"; "Parent"; "Home"];
+  let r = search_titles post ["search", "tree c"; "search-for", "title"] in
+  check_contains "title match" ~sub: {|href="/trees/c/"|} r;
+  check_absent "other trees excluded" ~sub: {|href="/trees/a/"|} r;
+  let r = search_titles post ["search", "kepler"; "search-for", "title"] in
+  check_absent "title search ignores bodies" ~sub: {|href="/trees/parent/"|} r;
+  let r = search_titles post ["search", "kepler"; "search-for", "full-text"] in
+  check_contains "full text includes inline subtrees" ~sub: {|href="/trees/parent/"|} r;
+  let r = search_titles post ["search", "hello"; "search-for", "full-text"] in
+  check_contains "full text match" ~sub: {|href="/trees/a/"|} r;
+  check_absent "transcluded text is found under its own tree" ~sub: {|href="/trees/parent/"|} r
+
+let test_search_menu ~env () =
+  let@ get, _ = with_server ~env in
+  let r = get ~headers: htmx "/searchmenu" in
+  Alcotest.(check int) "status" 200 r.status;
+  check_contains "search form" ~sub: {|hx-post="/search"|} r.body
 
 let () =
   let@ env = Eio_main.run in
@@ -208,5 +244,10 @@ let () =
         test_case "backlinks" `Quick (test_backlinks ~env);
         test_case "empty query deletes section" `Quick (test_empty_query ~env);
         test_case "backmatter queries round-trip" `Quick (test_backmatter_queries ~env);
+      ];
+      "search",
+      [
+        test_case "search menu" `Quick (test_search_menu ~env);
+        test_case "search results" `Quick (test_search ~env);
       ];
     ]

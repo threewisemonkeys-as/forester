@@ -156,28 +156,12 @@ let handle_request
               )
               (Uri.query_of_encoded body)
           in
-          let _search_term = Option.value ~default: "" @@ get_param "search" in
-          let search_for = get_param "search-for" in
-          let search_results =
-            match search_for with
-            | None -> []
-            | Some "title-text" ->
-              (* Forester_search.Index.search *)
-              (*   forest.search_index *)
-              (*   search_term *)
-              []
-            | Some "full-text" ->
-              (* Forester_search.Index.search *)
-              (*   forest.search_index *)
-              (*   search_term *)
-              []
-            | Some _ -> assert false
-          in
+          let search_term = Option.value ~default: "" @@ get_param "search" in
+          let full_text = get_param "search-for" = Some "full-text" in
+          let search_results = Search_menu.search forest ~full_text search_term in
           let response
             =
-            Search_menu.results
-              forest
-              (List.map snd search_results)
+            Search_menu.results forest search_results
           in
           Cohttp_eio.Server.respond_string
             ~status: `OK

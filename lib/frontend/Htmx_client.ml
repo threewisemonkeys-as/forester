@@ -82,15 +82,26 @@ let content_target_to_http_header (target : T.content_target) =
   | T.Taxon ->
     `Assoc ["Taxon", `String "true"]
 
+let xhtml_ns = "http://www.w3.org/1999/xhtml"
+
+(* We are emitting HTML rather than XML, so elements in the XHTML namespace
+   (e.g. [html:p], produced by [\p]) must be rendered without their prefix;
+   otherwise the browser treats them as unknown elements. *)
 let render_xml_qname = function
+  | {xmlns = Some xmlns; uname; _} when xmlns = xhtml_ns -> uname
+  | {prefix = "html"; xmlns = None; uname} -> uname
   | {prefix = ""; uname; _} -> uname
   | {prefix; uname; _} -> Format.sprintf "%s:%s" prefix uname
 
-let render_xml_attr
-  : T.content T.xml_attr -> _
-= fun T.{key; value = _} ->
-  string_attr (render_xml_qname key) "todo"
-(* "%a" render_content value *)
+let render_xml_attr (forest : State.t) : T.content T.xml_attr -> _ =
+  fun T.{key; value} ->
+  let value =
+    Plain_text_client.string_of_content
+      ~forest
+      ~router: (Legacy_xml_client.route forest)
+      value
+  in
+  string_attr (render_xml_qname key) "%s" value
 
 let render_xmlns_prefix ({prefix; xmlns}: xmlns_attr) =
   let attr = match prefix with "" -> "xmlns" | _ -> "xmlns:" ^ prefix in
@@ -409,7 +420,7 @@ and render_content_node (forest : State.t) (node : 'a T.content_node) : node lis
     let prefixes_to_add, (name, attrs, content) =
       let@ () = Xmlns.within_scope in
       render_xml_qname elt.name,
-      List.map render_xml_attr elt.attrs,
+      List.map (render_xml_attr forest) elt.attrs,
       render_content forest elt.content
     in
     let attrs =
@@ -618,6 +629,7 @@ let render_transclusion (forest : State.t) (content : T.content) =
   render_content forest content
 
 let render_query_result (forest : State.t) (vs : Vertex_set.t) =
+  let@ () = Xmlns.run ~reserved: [] in
   let module C = Types.Comparators(struct
     let string_of_content =
       Plain_text_client.string_of_content
@@ -644,3 +656,6 @@ let render_query_result (forest : State.t) (vs : Vertex_set.t) =
   in
   if List.length nodes = 0 then None
   else Some (div [class_ "tree-content"] nodes)
+
+let render_query (forest : State.t) query =
+  render_query_result forest @@ Forest.run_datalog_query forest.graphs query

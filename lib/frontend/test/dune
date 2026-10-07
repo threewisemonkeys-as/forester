@@ -8,7 +8,8 @@
   Test_config
   Test_implanting
   Test_json_manifest_client
-  Test_legacy_xml_client)
+  Test_legacy_xml_client
+  Test_htmx_client)
  (preprocess
   (pps ppx_deriving.show ppx_yojson_conv))
  (libraries
@@ -21,6 +22,7 @@
   eio.unix
   logs
   pure-html
+  repr
   forester.prelude
   forester.core
   forester.compiler
@@ -36,5 +38,6 @@
   forester.compiler
   forester.frontend
   pure-html
+  repr
   eio_main
   logs))

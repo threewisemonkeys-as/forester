@@ -17,10 +17,17 @@ val query_t : query Repr.t
 val route : State.t -> URI.t -> URI.t
 val render_article : State.t -> T.content T.article -> Pure_html.node
 
+(** The HTML name for an XML element or attribute: XHTML names lose their prefix. *)
+val render_xml_qname : T.xml_qname -> string
+
 val render_content : State.t -> T.content -> Pure_html.node list
 val render_transclusion : State.t -> T.content -> Pure_html.node list
 val render_frontmatter : State.t -> T.content T.frontmatter -> Pure_html.node
 
 val render_query_result : State.t -> Vertex_set.t -> Pure_html.node option
+
+(** Evaluate a datalog query against the forest and render the matching
+    trees, or [None] if nothing matches. *)
+val render_query : State.t -> (string, T.content T.vertex) Datalog_expr.query -> Pure_html.node option
 
 val render_toc : T.content T.section -> Pure_html.node

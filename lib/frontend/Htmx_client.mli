@@ -18,6 +18,7 @@ val route : State.t -> URI.t -> URI.t
 val render_article : State.t -> T.content T.article -> Pure_html.node
 
 val render_content : State.t -> T.content -> Pure_html.node list
+val render_transclusion : State.t -> T.content -> Pure_html.node list
 val render_frontmatter : State.t -> T.content T.frontmatter -> Pure_html.node
 
 val render_query_result : State.t -> Vertex_set.t -> Pure_html.node option

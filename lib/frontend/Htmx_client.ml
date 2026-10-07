@@ -284,7 +284,7 @@ and render_frontmatter (forest : State.t) (frontmatter : T.content T.frontmatter
     | Some uri ->
       let uri_str =
         (* TODO: replace with proper routing from legacy xml client *)
-        Format.asprintf "%a" URI.pp (route forest uri)
+        "/trees" ^ URI.path_string uri
       in
       a
         [class_ "slug"; href "%s" uri_str;]
@@ -293,7 +293,7 @@ and render_frontmatter (forest : State.t) (frontmatter : T.content T.frontmatter
   let source_path =
     match frontmatter.source_path with
     | Some path ->
-      [a [class_ "edit-button"; href "vscode://file%s" path] [txt "[edit]"]]
+      [a [class_ "edit-button"; href "zed://file%s" path] [txt "[edit]"]]
     | None -> []
   in
   let find_meta key =
@@ -612,6 +612,10 @@ and render_toc (section : T.content T.section) =
             render_toc_mainmatter section.mainmatter;
           ]
       ]
+
+let render_transclusion (forest : State.t) (content : T.content) =
+  let@ () = Xmlns.run ~reserved: [] in
+  render_content forest content
 
 let render_query_result (forest : State.t) (vs : Vertex_set.t) =
   let module C = Types.Comparators(struct

@@ -118,7 +118,7 @@ let handler
                 | None -> Cohttp_eio.Server.respond_string ~status: `Not_found ~body: "" ()
                 | Some content ->
                   (* TODO: Remove any sort of HTML generation from the handler. *)
-                  let response = Pure_html.(to_string @@ HTML.span [] (Htmx_client.render_content forest content)) in
+                  let response = Pure_html.(to_string @@ HTML.span [] (Htmx_client.render_transclusion forest content)) in
                   Cohttp_eio.Server.respond_string ~status: `OK ~body: response ()
             end
           else

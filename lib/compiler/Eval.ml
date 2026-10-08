@@ -276,7 +276,8 @@ and eval_node node : Value.t =
     in
     let subtree = eval_tree_inner ?uri nodes in
     let frontmatter = Frontmatter.get () in
-    let subtree = {subtree with frontmatter = {subtree.frontmatter with uri; designated_parent = frontmatter.uri}} in
+    let source_line = Option.map Range.begin_line_num loc in
+    let subtree = {subtree with frontmatter = {subtree.frontmatter with uri; designated_parent = frontmatter.uri; source_line}} in
     begin
       match uri with
       | Some uri ->

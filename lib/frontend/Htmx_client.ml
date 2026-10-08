@@ -301,7 +301,9 @@ and render_frontmatter ?label (forest : State.t) (frontmatter : T.content T.fron
   let source_path =
     match frontmatter.source_path with
     | Some path ->
-      [a [class_ "edit-button"; href "zed://file%s" path] [txt "[edit]"]]
+      (* Subtrees link to their own line so the edit opens at the section *)
+      let line = match frontmatter.source_line with Some n -> Format.sprintf ":%d" n | None -> "" in
+      [a [class_ "edit-button"; href "zed://file%s%s" path line] [txt "[edit]"]]
     | None -> []
   in
   let find_meta key =

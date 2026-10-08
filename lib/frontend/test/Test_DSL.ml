@@ -75,6 +75,7 @@ let test () =
                   number = None;
                   designated_parent = None;
                   source_path = None;
+                  source_line = None;
                   tags = [];
                   metas = [];
                   last_changed = None

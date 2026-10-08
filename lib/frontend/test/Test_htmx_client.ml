@@ -212,6 +212,13 @@ let test_article_is_html ~env () =
   check_contains "slug link" ~sub: {|href="/trees/a/"|} html;
   check_contains "edit link opens Zed" ~sub: {|href="zed://file/|} html
 
+let test_subtree_edit_links_have_line ~env () =
+  let@ forest = with_forest ~env in
+  let html = normalise @@ Pure_html.to_string (Htmx_client.render_article forest (get_article forest "parent")) in
+  check_contains "tree edit link has no line" ~sub: {|parent.tree"|} html;
+  check_contains "subtree edit link has its line" ~sub: {|parent.tree:4"|} html;
+  check_contains "nested subtree edit link has its line" ~sub: {|parent.tree:6"|} html
+
 (* The /query endpoint receives the query as JSON in a request parameter. *)
 let roundtrip_query q =
   let query_repr = Datalog_expr.(query_t Repr.string (T.vertex_t T.content_t)) in
@@ -264,6 +271,7 @@ let () =
         test_case "XHTML names lose their prefix" `Quick test_xhtml_names;
         test_case "mainmatter renders as HTML" `Quick (test_mainmatter_is_html ~env);
         test_case "article renders as HTML" `Quick (test_article_is_html ~env);
+        test_case "subtree edit links include the line" `Quick (test_subtree_edit_links_have_line ~env);
       ];
       "page structure",
       [

@@ -423,7 +423,8 @@ and render_content_node (forest : State.t) (node : 'a T.content_node) : node lis
   | Text str ->
     [txt "%s" str]
   | CDATA str ->
-    [txt ~raw: true "<![CDATA[%s]]>" str]
+    (* Browsers parse HTML CDATA sections as comments, hiding verbatim text. *)
+    [txt "%s" str]
   | Xml_elt elt ->
     let prefixes_to_add, (name, attrs, content) =
       let@ () = Xmlns.within_scope in

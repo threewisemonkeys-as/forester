@@ -23,6 +23,9 @@ let raw_trees = [
 \p{Hello \strong{world}.}
 \ul{\li{first}\li{second}}
 \<html:span>[class]{note}{annotated}
+\pre{\startverb
+x_1 = a < b {c}
+\stopverb}
 |};
   };
   {path = "b.tree"; content = {|\title{Tree \strong{B}}
@@ -198,7 +201,9 @@ let test_mainmatter_is_html ~env () =
   check_contains "paragraph" ~sub: "<p>Hello <strong>world</strong>.</p>" html;
   check_contains "list" ~sub: "<ul><li>first</li><li>second</li></ul>" html;
   check_contains "attribute value" ~sub: {|<span class="note">annotated</span>|} html;
-  check_absent "no placeholder attributes" ~sub: "todo" html
+  check_absent "no placeholder attributes" ~sub: "todo" html;
+  check_absent "verbatim is not a CDATA section" ~sub: "CDATA" html;
+  check_contains "verbatim is escaped text" ~sub: "x_1 = a &lt; b {c}" html
 
 let test_article_is_html ~env () =
   let@ forest = with_forest ~env in
